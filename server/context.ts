@@ -25,9 +25,16 @@ export async function sources(handle: Awaited<ReturnType<typeof session>>["handl
   });
 }
 export async function findSource(handle: Awaited<ReturnType<typeof session>>["handle"], locator: Locator) {
-  const matches = (await sources(handle)).filter((s) => JSON.stringify(s.locator) === JSON.stringify(locatorSchema.parse(locator)));
-  if (matches.length !== 1) throw new Error("Source not found or ambiguous within the latest 100 timeline entries.");
-  return matches[0]!;
+  const expected = locatorSchema.parse(locator);
+  if (expected.agentId !== handle.id || expected.serverId !== handle.address.serverId) throw new Error("Source agent or host mismatch.");
+  const page = await handle.timeline.refetch({ projection: expected.projection, direction: "before", cursor: { epoch: expected.epoch, seq: expected.seqEnd + 1 }, limit: 1 });
+  if (page.error || page.staleCursor || page.reset || page.gap || page.projection !== expected.projection || page.epoch !== expected.epoch || page.entries.length !== 1) throw new Error("Source could not be verified at the requested cursor.");
+  const entry = page.entries[0]!;
+  const item = entry.item;
+  if (item.type !== "user_message" || /^\s*<paseo-system\b/.test(item.text)) throw new Error("Source is not a user message.");
+  const actual = locatorSchema.parse({ agentId: handle.id, serverId: handle.address.serverId, projection: page.projection, epoch: page.epoch, seqStart: entry.seqStart, seqEnd: entry.seqEnd, messageId: item.messageId, clientMessageId: item.clientMessageId, hash: createHash("sha256").update(item.text).digest("hex") });
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error("Source locator does not match.");
+  return sourceSchema.parse({ locator: actual, excerpt: item.text.slice(0, 500), role: "user_message" });
 }
 export function scopeId(context: z.infer<typeof contextSchema>, kind: "project" | "host") {
   const id = kind === "host" ? context.serverId : context.projectId;

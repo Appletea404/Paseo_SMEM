@@ -52,7 +52,7 @@ export class MemoryService {
     }
     return false;
   }
-  confirm(agentId: string, id: string, revision: number, confirmationId: string, selected: Candidate[], context: Proposal["context"]) {
+  confirm(agentId: string, id: string, revision: number, confirmationId: string, selected: Candidate[], context: Proposal["context"], evidence?: { candidateId: string; requestId: string; stage: string; fingerprint: string }[]) {
     if (this.confirmed(agentId, id, revision, confirmationId, selected)) return selected.length;
     const proposal = this.get(agentId, id, revision);
     if (!sameContext(proposal.context, context)) throw new Error("Agent context changed.");
@@ -60,7 +60,7 @@ export class MemoryService {
     for (const c of selected) if (scopeId(proposal.context, c.scope.kind).id !== c.scope.id) throw new Error("Invalid scope.");
     const db = this.db!;
     const payload = JSON.stringify({ agentId, id, revision, selected });
-    const source = JSON.stringify({ format: "paseo-smem-source", version: 1, verification: "timeline-user-message", context: proposal.context, locator: proposal.source.locator });
+    const source = JSON.stringify(evidence ? { format: "paseo-smem-source", version: 2, verification: "native-question-response", context: proposal.context, locator: proposal.source.locator, evidence } : { format: "paseo-smem-source", version: 1, verification: "timeline-user-message", context: proposal.context, locator: proposal.source.locator });
     db.exec("BEGIN IMMEDIATE");
     try {
       db.prepare("INSERT INTO confirmations VALUES (?, ?)").run(confirmationId, payload);
