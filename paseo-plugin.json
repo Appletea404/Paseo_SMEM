@@ -1,0 +1,1 @@
+{"id":"paseo-smem","name":"Shared Memory","description":"Review and save explicitly requested memories.","requirements":{"paseo":">=0.15.4"}}
