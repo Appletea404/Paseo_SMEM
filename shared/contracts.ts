@@ -16,6 +16,12 @@ export const proposeInput = z.object({
 export const lookupInput = z.object({ scopes: z.array(z.enum(["project", "host"])).min(1) });
 export const memoriesSchema = z.array(z.object({ id: z.string(), text: z.string(), scope: scopeSchema, source: z.string() }));
 export const getProposals = defineRpc({ name: "memory.proposals", input: z.object({ agentId: z.string().min(1) }), output: z.object({ proposals: z.array(proposalSchema) }) });
+export const getProposal = defineRpc({ name: "memory.proposal", input: z.object({ agentId: z.string().min(1), proposalId: z.string().min(1), revision: z.number().int().positive() }), output: z.object({ proposal: proposalSchema.nullable() }) });
+export const cardSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("pending"), agentId: z.string(), proposalId: z.string(), revision: z.number().int() }),
+  z.object({ status: z.literal("saved"), agentId: z.string(), proposalId: z.string(), revision: z.number().int(), selected: z.array(candidateSchema).min(1) }),
+  z.object({ status: z.literal("canceled"), agentId: z.string(), proposalId: z.string(), revision: z.number().int() }),
+]);
 export const setDatabase = defineRpc({ name: "memory.database", input: z.object({ path: z.string().trim().min(1) }), output: z.object({ configured: z.boolean() }) });
-export const cancelProposal = defineRpc({ name: "memory.cancel", input: z.object({ agentId: z.string(), proposalId: z.string(), revision: z.number().int() }), output: z.object({ canceled: z.boolean() }) });
-export const confirmProposal = defineRpc({ name: "memory.confirm", input: z.object({ agentId: z.string(), proposalId: z.string(), revision: z.number().int(), confirmationId: z.string().min(1), selected: z.array(candidateSchema).min(1) }), output: z.object({ status: z.literal("committed"), count: z.number().int() }) });
+export const cancelProposal = defineRpc({ name: "memory.cancel", input: z.object({ agentId: z.string(), proposalId: z.string(), revision: z.number().int() }), output: z.object({ canceled: z.boolean(), cardUpdated: z.boolean() }) });
+export const confirmProposal = defineRpc({ name: "memory.confirm", input: z.object({ agentId: z.string(), proposalId: z.string(), revision: z.number().int(), confirmationId: z.string().min(1), selected: z.array(candidateSchema).min(1) }), output: z.object({ status: z.literal("committed"), count: z.number().int(), cardUpdated: z.boolean() }) });

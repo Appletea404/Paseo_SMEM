@@ -8,6 +8,8 @@ import { MemoryService } from "./memory.ts";
 import { findSource, sameContext, scopeId, sources } from "./context.ts";
 import { proposeInput } from "../shared/contracts.ts";
 import { z } from "zod";
+import contribute from "../index.server.ts";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
 
 const context = { agentId: "agent", serverId: "host-a", workspaceId: "workspace-a", projectId: "project-a", cwd: null, workspaceName: null };
 const source = { role: "user_message" as const, excerpt: "example", locator: { agentId: "agent", serverId: "host-a", projection: "projected" as const, epoch: "epoch", seqStart: 1, seqEnd: 1, hash: "hash" } };
@@ -161,4 +163,72 @@ test("legacy source and confirmation payload remain unchanged", () => {
     assert.equal(service.confirmed("agent", "old-proposal", 1, "legacy-id", selected), true);
     assert.equal(service.lookup([selected[0]!.scope])[0]!.source, "legacy source");
   } finally { service.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("timeline card lifecycle separates database outcome from append failures", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "paseo-smem-"));
+  const handlers: Record<string, (...args: any[]) => any> = {};
+  let hook: (...args: any[]) => any = () => undefined;
+  const server = {
+    addHook: (_name: string, fn: (...args: any[]) => any) => { hook = fn; },
+    handle: (contract: { name: string }, fn: (...args: any[]) => any) => { handlers[contract.name] = fn; },
+  } as unknown as PluginServerContext;
+  const cleanup = contribute(server);
+  const published: any[] = [];
+  let failAppend = false;
+  const handle = {
+    id: "agent", address: { serverId: "host-a" }, workspaceId: "workspace-a", cwd: "E:\\project",
+    refresh: async () => ({ agent: {} }),
+    timeline: {
+      refetch: async () => ({ projection: "projected", epoch: "epoch", error: null, entries: [{ item: { type: "user_message", text: "source text", messageId: "message" }, seqStart: 1, seqEnd: 1 }] }),
+      append: async (row: any) => { if (failAppend) throw new Error("append failed"); published.push(row); },
+    },
+  };
+  const paseo = { agents: { ref: () => handle }, workspaces: { ref: () => ({ refresh: async () => ({ projectId: "project-a", name: "workspace" }) }) } };
+  try {
+    const tools = (await hook({ request: { tools: [] } })).tools;
+    const tool = tools.find((item: { name: string }) => item.name === "memory_propose");
+    const contextArg = { agent: { id: "agent" }, paseo };
+    const sourceResult = await tool.execute({ action: "sources" }, contextArg);
+    assert.equal(published.length, 0);
+    const locator = sourceResult.structuredContent.sources[0].locator;
+    const input = { action: "propose", locator, candidates: [{ id: "a", text: "one", scopeKind: "project" }, { id: "b", text: "two", scopeKind: "host" }] };
+    const first = (await tool.execute(input, contextArg)).structuredContent;
+    assert.equal(first.cardPublished, true);
+    assert.deepEqual(Object.keys(published[0].data).sort(), ["agentId", "proposalId", "revision", "status"]);
+    const p = first.proposal;
+    const refs = { agentId: "agent", proposalId: p.id, revision: p.revision };
+    assert.equal((await handlers["memory.proposal"]!(refs)).proposal.id, p.id);
+    assert.equal((await handlers["memory.proposal"]!({ ...refs, revision: 2 })).proposal, null);
+    handlers["memory.database"]!({ path: join(dir, "memory.sqlite") });
+    const selected = [{ id: "a", text: "edited", scope: { kind: "project", id: "project-a" } }];
+    const confirm = { ...refs, confirmationId: "first", selected };
+    const saved = await handlers["memory.confirm"]!(confirm, { paseo });
+    assert.equal(saved.cardUpdated, true);
+    assert.equal(published[1].id, published[0].id);
+    assert.deepEqual(published[1].data.selected, selected);
+    assert.equal((await handlers["memory.proposal"]!(refs)).proposal, null);
+    assert.equal((await handlers["memory.confirm"]!(confirm, { paseo })).count, 1);
+    assert.equal(published.length, 2);
+    const second = (await tool.execute(input, contextArg)).structuredContent.proposal;
+    const cancelRefs = { agentId: "agent", proposalId: second.id, revision: 1 };
+    const canceled = await handlers["memory.cancel"]!(cancelRefs, { paseo });
+    assert.equal(canceled.canceled, true);
+    assert.equal(published[3].id, published[2].id);
+    assert.equal(published[3].data.status, "canceled");
+    const third = (await tool.execute(input, contextArg)).structuredContent.proposal;
+    failAppend = true;
+    const failedUpdate = await handlers["memory.confirm"]!({ agentId: "agent", proposalId: third.id, revision: 1, confirmationId: "third", selected }, { paseo });
+    assert.equal(failedUpdate.status, "committed");
+    assert.equal(failedUpdate.cardUpdated, false);
+    const db = new DatabaseSync(join(dir, "memory.sqlite"));
+    assert.equal(db.prepare("SELECT count(*) AS n FROM memories").get()?.n, 2);
+    db.close();
+    const failedPublish = (await tool.execute(input, contextArg)).structuredContent;
+    assert.equal(failedPublish.cardPublished, false);
+    assert.match(failedPublish.message, /no memory was saved/);
+    const canceledWithoutCard = await handlers["memory.cancel"]!({ agentId: "agent", proposalId: failedPublish.proposal.id, revision: 1 }, { paseo });
+    assert.equal(canceledWithoutCard.canceled, true);
+    assert.equal(canceledWithoutCard.cardUpdated, false);
+  } finally { await cleanup?.(); rmSync(dir, { recursive: true, force: true }); }
 });
